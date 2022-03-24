@@ -1,0 +1,157 @@
+pipeline {
+    agent any
+    environment {
+        WORKSPACEDIRECTORY = 'C:\\Program Files (x86)\\Jenkins\\workspace\\ecip3'
+        VERSION = 'latest'
+        REPOSITORY = 'nsampah/ecips'
+        BUILDCONDAPATH = 'C:\\Users\\n.owusu.-sampah\\Miniconda3\\Library\\bin'
+        DEPLOYCONDAPATH = 'C:\\Users\\n.owusu.-sampah\\Miniconda3\\Library\\bin'
+        REPOURL = 'https://index.docker.io/repository/docker/nsampah/ecips'
+    }
+    stages {
+        stage('Build Setup') {
+            steps {
+                dir("${BUILDCONDAPATH}"){
+                    bat "conda env create -f \"${WORKSPACEDIRECTORY}\\ecips_testing\\environment.yml\""
+                    bat "conda activate ecips"
+                }
+            }
+        }
+        	stage('Code Linting') {
+            steps {
+                dir("${BUILDCONDAPATH}"){
+                    bat "conda run -n ecips flake8 --output-file=\"${WORKSPACEDIRECTORY}\\flake8.txt\" \"${WORKSPACEDIRECTORY}\""
+                    bat "conda run -n ecips flake8_junit \"${WORKSPACEDIRECTORY}\\flake8.txt\" \"${WORKSPACEDIRECTORY}\\flake8.xml\""
+                }
+            }
+            post {
+                always {
+                    junit "**\\flake8.xml"
+                }
+                unstable{
+                    dir("${BUILDCONDAPATH}"){
+                       // bat "conda deactivate"
+                       // bat "conda env remove --name ecips"
+                        bat "echo Linting Failed. Check ${WORKSPACEDIRECTORY}\\flake8.txt for full report."
+                    }
+                    
+                }
+            }
+        } 
+        stage('Automated Unit Testing') {
+            steps {
+                dir("${BUILDCONDAPATH}"){
+                    bat "conda run -n ecips python -m pytest --cov=\"${WORKSPACEDIRECTORY}\" --cov-report xml:\"${WORKSPACEDIRECTORY}\\unit_coverage.xml\" --junitxml=\"${WORKSPACEDIRECTORY}\\unit_test.xml\" \"${WORKSPACEDIRECTORY}\\ecips_testing\\unit_tests\""
+                }
+            }
+            post {
+                always {
+                    junit "**\\unit_test.xml"
+                }
+                unstable{
+                    dir("${BUILDCONDAPATH}"){
+                     //   bat "conda deactivate"
+                     //   bat "conda env remove --name ecips"
+                        bat "echo Unit Testing Failed"
+                    }
+                    
+                }
+            }
+        }
+        stage('Sonar Scan') {
+            steps {
+		        withSonarQubeEnv(credentialsId: 'sonartoken', installationName: 'Sonarqube') {
+                    dir("${WORKSPACEDIRECTORY}"){
+                        bat "sonar-scanner.bat -D\"sonar.projectKey=ecip\" -D\"sonar.sources=.\""
+                        }
+                    }
+				}
+            }
+		
+        stage('Build Images') {
+            steps {
+                dir("${WORKSPACEDIRECTORY}\\Docker"){
+                    bat "docker-compose -f docker-compose-build.yml build"
+                }
+            }
+        }
+        stage('Push to Registry') {
+            steps {
+                bat "docker tag ecips_base:${VERSION} ${REPOSITORY}:ecips_base${VERSION}"
+                bat "docker tag ecips_worker_livemail:${VERSION} ${REPOSITORY}:ecips_worker_livemail${VERSION}"
+                bat "docker tag ecips_controller:${VERSION} ${REPOSITORY}:ecips_controller${VERSION}"
+                withDockerRegistry([credentialsId: 'dockerhub', url: "${REPOURL}"]) {
+                    dir("${WORKSPACEDIRECTORY}\\Docker"){
+                        bat "docker-compose -f docker-compose-repository.yml push"
+                    }
+                }
+            }
+        }
+        stage('Build Cleanup') {
+            steps {
+                bat "docker system prune -af"
+                dir("${BUILDCONDAPATH}"){
+                    bat "conda deactivate"
+                    bat "conda env remove --name ecips"
+                }
+            }
+        }
+        stage('Deploy Setup') {
+            steps {
+                dir("${DEPLOYCONDAPATH}"){
+                    bat "conda env create -f \"${WORKSPACEDIRECTORY}\\ecips_testing\\environment.yml\""
+                    bat "conda activate ecips"
+                }
+            }
+        }
+        stage('Deploy') {
+            steps {
+                withDockerRegistry([credentialsId: 'dockerhub', url: "${REPOURL}"]) {
+                    dir("${WORKSPACEDIRECTORY}\\Docker"){
+                        bat "docker-compose -f docker-compose-repository.yml pull"
+                    }
+                }
+                dir("${WORKSPACEDIRECTORY}\\Docker"){
+                    bat "docker-compose -f docker-compose-deploy.yml up -d"
+                }
+            }
+        }
+        stage('Automated Integrated Testing') {
+            steps {
+                dir("${DEPLOYCONDAPATH}"){
+                    bat "conda run -n ecips python -m pytest --cov=\"${WORKSPACEDIRECTORY}\" --cov-report xml:\"${WORKSPACEDIRECTORY}\\integrated_coverage.xml\" --junitxml=\"${WORKSPACEDIRECTORY}\\integrated_test.xml\" \"${WORKSPACEDIRECTORY}\\ecips_testing\\integrated_tests\""
+                }
+            }
+            post {
+                always {
+                    junit "**\\integrated_test.xml"
+                }
+                unstable{
+                    dir("${WORKSPACEDIRECTORY}\\Docker"){
+                     //   bat "docker-compose -f docker-compose-deploy.yml down"
+                   // }
+                   // bat "docker system prune -af"
+                   // dir("${DEPLOYCONDAPATH}"){
+                       // bat "conda deactivate"
+                      //  bat "conda env remove --name ecips"
+                      bat "echo error Unit testing has failed"
+                    }
+                  
+                }
+            }
+        }
+        stage('Deploy Cleanup') {
+            steps {
+                dir("${WORKSPACEDIRECTORY}\\Docker"){
+                    bat "docker-compose -f docker-compose-deploy.yml down"
+                }
+                bat "docker system prune -af"
+                dir("${DEPLOYCONDAPATH}"){
+                    bat "conda deactivate"
+                    bat "conda env remove --name ecips"
+                }
+            }
+        }
+    }
+
+}

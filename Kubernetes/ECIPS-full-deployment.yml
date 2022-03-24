@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecips-controller
+spec:
+  type: NodePort
+  ports:
+  - nodePort: 30000
+    protocol: TCP
+    port: 9002
+    targetPort: 8000
+  selector:
+    app: ecips
+status:
+  loadBalancer: {}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ecips-volume
+  labels:
+    volumes: ecips
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/ecips"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ecips-deployment-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecips-deployment-minus-utils
+  labels:
+    app: ecips
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ecips
+  template:
+    metadata:
+      labels:
+        app: ecips
+    spec:
+      containers:
+      - name: ecips-controller
+        image: nsampah/ecips:ecips_controllerlatest
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - mountPath: /ECIPS
+          name: ecips-deployment
+      - name: ecips-worker
+        image: nsampah/ecips:ecips_worker_livemaillatest
+        volumeMounts:
+        - mountPath: /ECIPS
+          name: ecips-deployment
+        env:
+        - name: ECIPS_BASE_DIR
+          value: /ECIPs/
+          name: ECIPS_CELERY_BACKEND
+          value: redis://ecips_redis
+        - name: ECIPS_CELERY_BROKER
+          value: pyamqp://guest@ecips_rabbitmq/
+      - name: ecips-redis
+        image: redis:latest
+        ports:
+        - containerPort: 6379
+      - name: ecips-rabbitmq
+        image: rabbitmq:3-management
+        ports:
+        - containerPort: 5672
+        - containerPort: 15672
+      - name: ecips-flower
+        image: mher/flower
+        ports:
+        - containerPort: 8888
+        volumeMounts:
+        - mountPath: /ECIPS
+          name: ecips-deployment
+      imagePullSecrets:
+      - name: regcred
+      volumes:
+      - name: ecips-deployment
+        persistentVolumeClaim:
+          claimName: ecips-deployment-claim
